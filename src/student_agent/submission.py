@@ -39,6 +39,41 @@ def build_manifest(case_set: CaseSet) -> dict[str, Any]:
     }
 
 
+def validate_case_provenance(
+    outputs: dict[str, dict[str, Any]], events: list[dict[str, Any]]
+) -> None:
+    consumed: dict[str, set[str]] = {case_id: set() for case_id in outputs}
+    events_by_case: dict[str, list[str]] = {case_id: [] for case_id in outputs}
+    for event in events:
+        events_by_case.setdefault(event["case_id"], []).append(event["event_type"])
+        if event["event_type"] == "tool_result_consumed":
+            consumed.setdefault(event["case_id"], set()).update(event.get("evidence_refs", []))
+    for case_id, output in outputs.items():
+        event_types = events_by_case.get(case_id, [])
+        required = {
+            "case_received",
+            "task_assigned",
+            "tool_result_consumed",
+            "handoff",
+            "policy_decided",
+            "verification_completed",
+            "case_finalized",
+        }
+        missing = required - set(event_types)
+        if missing:
+            raise ValueError(f"{case_id}: missing lifecycle events: {sorted(missing)}")
+        if event_types[0] != "case_received" or event_types[-1] != "case_finalized":
+            raise ValueError(f"{case_id}: invalid lifecycle ordering")
+        refs = set(output.get("evidence_refs", []))
+        for claim in output.get("claim_assessments", []):
+            refs.update(claim.get("evidence_refs", []))
+        if not refs:
+            raise ValueError(f"{case_id}: no evidence refs")
+        unknown = refs - consumed.get(case_id, set())
+        if unknown:
+            raise ValueError(f"{case_id}: evidence refs not consumed in trace: {sorted(unknown)}")
+
+
 def validate_artifacts(
     root: Path, case_set: CaseSet, contracts: Contracts
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -64,6 +99,7 @@ def validate_artifacts(
     except (OSError, UnicodeDecodeError) as exc:
         raise ValueError("traces/trace.jsonl is missing or not UTF-8") from exc
     normalized_lines: list[str] = []
+    parsed_events: list[dict[str, Any]] = []
     seen_events: set[str] = set()
     for number, line in enumerate(trace_lines, 1):
         if not line.strip():
@@ -78,8 +114,10 @@ def validate_artifacts(
         if event["event_id"] in seen_events:
             raise ValueError(f"traces/trace.jsonl:{number}: duplicate event_id")
         seen_events.add(event["event_id"])
+        parsed_events.append(event)
         normalized_lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
+    validate_case_provenance(outputs, parsed_events)
     serialized = [json.dumps(value, ensure_ascii=False) for value in outputs.values()]
     if SECRET_PATTERN.search("\n".join([*serialized, *normalized_lines])):
         raise ValueError("a Team API Key appears in output or trace")
