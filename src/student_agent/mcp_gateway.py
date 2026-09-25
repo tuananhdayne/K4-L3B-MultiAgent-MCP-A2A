@@ -12,6 +12,13 @@ from mcp.client.streamable_http import streamable_http_client
 
 from .contracts import Contracts
 
+MCP_CALL_TIMEOUT_SECONDS = 90
+
+
+def _http_timeout() -> httpx2.Timeout:
+    # Leave the MCP SSE stream open through the full batch; bound tool POSTs below.
+    return httpx2.Timeout(300.0, connect=30.0, read=None, write=30.0, pool=30.0)
+
 
 class EvidenceGateway:
     def __init__(self, session: ClientSession, contracts: Contracts) -> None:
@@ -25,13 +32,15 @@ class EvidenceGateway:
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
         try:
-            result = await self._session.call_tool(tool_name, arguments=payload)
-        except httpx2.TransportError:
+            async with asyncio.timeout(MCP_CALL_TIMEOUT_SECONDS):
+                result = await self._session.call_tool(tool_name, arguments=payload)
+        except (httpx2.TransportError, TimeoutError):
             # Evidence tools are read-only; retry one transient network failure.
             await asyncio.sleep(0.25)
             try:
-                result = await self._session.call_tool(tool_name, arguments=payload)
-            except httpx2.TransportError as exc:
+                async with asyncio.timeout(MCP_CALL_TIMEOUT_SECONDS):
+                    result = await self._session.call_tool(tool_name, arguments=payload)
+            except (httpx2.TransportError, TimeoutError) as exc:
                 raise RuntimeError(f"MCP tool {tool_name} failed after one network retry") from exc
         if result.is_error:
             message = " ".join(
@@ -55,7 +64,7 @@ async def connect_gateway(
     endpoint: str, team_api_key: str, contracts: Contracts
 ) -> AsyncIterator[EvidenceGateway]:
     headers = {"Authorization": f"Bearer {team_api_key}"}
-    timeout = httpx2.Timeout(300.0, connect=30.0, write=30.0, pool=30.0)
+    timeout = _http_timeout()
     async with (
         httpx2.AsyncClient(headers=headers, timeout=timeout) as http_client,
         streamable_http_client(endpoint, http_client=http_client) as (read_stream, write_stream),

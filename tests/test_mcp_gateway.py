@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx2
 
 from student_agent.contracts import Contracts
-from student_agent.mcp_gateway import EvidenceGateway
+from student_agent.mcp_gateway import EvidenceGateway, _http_timeout
 
 
 class Session:
@@ -48,3 +48,7 @@ def test_gateway_retries_one_transient_read_timeout():
     result = asyncio.run(gateway.call("get_order", case_id="L3B_CASE_001", order_id="order-1"))
     assert result["data"]["order_id"] == "order-1"
     assert session.attempts == 2
+
+
+def test_mcp_stream_has_no_read_timeout():
+    assert _http_timeout().read is None
