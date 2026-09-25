@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -23,7 +24,15 @@ class EvidenceGateway:
 
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
-        result = await self._session.call_tool(tool_name, arguments=payload)
+        try:
+            result = await self._session.call_tool(tool_name, arguments=payload)
+        except httpx2.TimeoutException:
+            # Evidence tools are read-only; retry a single transient network timeout.
+            await asyncio.sleep(0.25)
+            try:
+                result = await self._session.call_tool(tool_name, arguments=payload)
+            except httpx2.TimeoutException as exc:
+                raise RuntimeError(f"MCP tool {tool_name} timed out after one retry") from exc
         if result.is_error:
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
