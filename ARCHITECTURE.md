@@ -32,24 +32,24 @@ Only the coordinator passes the input `case_id` to `EvidenceGateway.call`. The g
 
 Candidate order IDs are deduplicated from `customer_request.claimed_order_id` and `candidate_order_ids`. Customer history is used first when the input has a customer hint; an order returned by that history is preferred. The selected candidate is verified by `get_order`, and remaining candidates are recorded as rejected. If the first candidate fails, other candidates are tried. If none yields an order, the output uses `not_found` and `insufficient_evidence` rather than inventing an entity. When multiple records reuse an order ID, the workflow picks the latest purchase timestamp not later than the case's `opened_at`, then scopes item, shipment, payment and refund events to that snapshot's time window.
 
-Handoffs are correlated by `case_id`; actors do not send free-form hidden reasoning to trace. Calls are sequential, and the per-case cache prevents duplicate calls with the same tool and arguments. The workflow has no cross-case evidence reuse. The current implementation performs no automatic retry on a tool error; a failed optional tool produces missing data, and a failed required tool lowers confidence.
+Handoffs are correlated by `case_id`; actors do not send free-form hidden reasoning to trace. Entity calls run in order; independent specialist and policy calls run concurrently. The per-case cache prevents duplicate calls with the same tool and arguments. The workflow has no cross-case evidence reuse.
 
 ## 4. Evidence and conflict lifecycle
 
 Every successful MCP result used by the workflow emits `tool_result_consumed` with its original ref and tool name. The output includes refs for the order, entity, item, policy and the specialist sources relevant to the chosen issue. Claim assessments cite the output refs. The gateway's audit is the authority for provenance; the trace does not fabricate calls or refs.
 
-Shipment events and payment/refund events take precedence over a complaint topic. `get_policy` supplies allowed case status, action, responsible parties and policy refund amount. Recommended refund is capped by captured minus already refunded value. If the latest raw order or shipment record differs from the case's selected temporal snapshot, `data_conflicts` records both sources and selects the case-scoped customer record. If the customer/order link conflicts, the conflict remains unresolved and confidence is reduced.
+An issue named in the complaint is selected when MCP evidence confirms it. If no named issue is confirmed, an observed issue can override the complaint. `get_policy` supplies allowed case status, action, responsible parties and policy refund amount. Recommended refund is capped by captured minus already refunded value. If the latest raw order or shipment record differs from the case's selected temporal snapshot, `data_conflicts` records both sources and selects the case-scoped customer record. If the customer/order link conflicts, the conflict remains unresolved and confidence is reduced.
 
 ## 5. Failure and efficiency policy
 
 | Failure | Retry budget | Fallback | Trace/result |
 | --- | ---: | --- | --- |
-| MCP tool failure or timeout | 0 automatic retries | Missing data; never fabricate evidence | No `tool_result_consumed` for failed call |
+| MCP transport failure or timeout | One tool retry and up to two retries for the affected eight-case block | Discard the block's temporary trace before retry | Only completed blocks enter the submission trace |
 | Candidate not found | Try each listed candidate once | `entity_resolution.status=not_found` | Entity handoff with `entity_not_found` |
 | Source conflict | No extra query by default | Record conflict and lower confidence | `data_conflicts` |
 | Invalid specialist data | No extra query by default | Conservative verdict and amount | Output schema validation by CLI |
 
-Refund timeline is queried only for refund/cancellation/unavailability complaints; product context is queried only when the case scope requests it. Each tool/argument pair is cached within the case. The MCP session is shared for transport, while investigator state is per case. A failed `day09 run` can leave an incomplete batch; rerunning starts from an empty outputs/trace directory.
+Refund timeline is queried only for refund/cancellation/unavailability complaints; shipment summary is queried only for delivery complaints. Product context is not queried because no released issue type uses product detail in its decision. Each tool/argument pair is cached within the case. Eight cases share an MCP session; a transport failure retries only that block. A new `day09 run` starts from an empty outputs/trace directory. `day09 run --resume` keeps only completed eight-case blocks, each with a finalized trace.
 
 ## 6. Verification invariants
 
@@ -59,7 +59,7 @@ The workflow keeps refund lines equal to the recommended refund, limits refund t
 
 ## 7. Reproducibility and run commands
 
-Python 3.11 or newer is required. Dependencies are declared in `pyproject.toml`; this checkout was run with Python 3.13.5. No randomness or LLM is used by the workflow. MCP calls run sequentially across cases, which avoids parallel cross-case state but makes a full batch sensitive to network availability. Keep `.env` private and untracked.
+Python 3.11 or newer is required. Dependencies are declared in `pyproject.toml`; this checkout was run with Python 3.13.5. No randomness or LLM is used by the workflow. Cases run in input order; independent tools within a case run concurrently. Keep `.env` private and untracked.
 
 ```text
 python -m pip install -e ".[dev]"

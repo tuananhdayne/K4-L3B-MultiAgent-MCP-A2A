@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -285,7 +286,7 @@ def choose_issue(
         "logistics_delay": "late_delivery_logistics",
     }
     for value, issue in observed.items():
-        if value in {shipment, payment} and issue in rules:
+        if value in {shipment, payment} and issue in topics and issue in rules:
             return issue
     if (
         payment == "reconciled"
@@ -295,6 +296,9 @@ def choose_issue(
         return "valid_split_payment"
     if "unsupported_claim" in topics and "unsupported_claim" in rules:
         return "unsupported_claim"
+    for value, issue in observed.items():
+        if value in {shipment, payment} and issue in rules:
+            return issue
     return "insufficient_evidence"
 
 
@@ -382,39 +386,31 @@ async def solve_case(
     trace.emit(
         case_id=case_id, event_type="task_assigned", actor="coordinator", target="specialist-agents"
     )
-    items_ev = (
-        await inv.call("order-agent", "get_order_items", order_id=selected) if selected else None
-    )
-    shipment_ev = (
-        await inv.call("shipment-agent", "get_shipment_summary", order_id=selected)
-        if selected
-        else None
-    )
-    payment_ev = (
-        await inv.call("payment-agent", "get_payment_timeline", order_id=selected)
-        if selected
-        else None
-    )
     topics = [claim.get("topic") for claim in request.get("claims", []) if isinstance(claim, dict)]
-    refund_ev = (
-        await inv.call("payment-agent", "get_refund_timeline", order_id=selected)
-        if selected
-        and any(
-            t in topics
-            for t in (
-                "refund_pending",
-                "refund_failed",
-                "canceled_order_paid",
-                "unavailable_order_paid",
+    calls = {}
+    if selected:
+        calls["items"] = inv.call("order-agent", "get_order_items", order_id=selected)
+        calls["payment"] = inv.call("payment-agent", "get_payment_timeline", order_id=selected)
+        if any(topic in {"late_delivery_seller", "late_delivery_logistics"} for topic in topics):
+            calls["shipment"] = inv.call(
+                "shipment-agent", "get_shipment_summary", order_id=selected
             )
-        )
-        else None
-    )
-    if selected and case.get("investigation_scope", {}).get("include_product_context"):
-        await inv.call("order-agent", "get_product_context", order_id=selected)
-    policy_ev = await inv.call(
+        if any(
+            topic
+            in {"refund_pending", "refund_failed", "canceled_order_paid", "unavailable_order_paid"}
+            for topic in topics
+        ):
+            calls["refund"] = inv.call("payment-agent", "get_refund_timeline", order_id=selected)
+        # Product details do not support any of the issue types in this case set.
+    calls["policy"] = inv.call(
         "policy-agent", "get_policy", policy_version=case.get("policy_version", "EC_POLICY_V2")
     )
+    fetched = dict(zip(calls, await asyncio.gather(*calls.values()), strict=True))
+    items_ev = fetched.get("items")
+    shipment_ev = fetched.get("shipment")
+    payment_ev = fetched.get("payment")
+    refund_ev = fetched.get("refund")
+    policy_ev = fetched["policy"]
     items = data(items_ev, [])
     items = items if isinstance(items, list) else []
     shipment = data(shipment_ev, {})

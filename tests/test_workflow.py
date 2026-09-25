@@ -24,6 +24,17 @@ def test_evidence_can_override_customer_claim_topic():
     assert issue == "payment_mismatch"
 
 
+def test_verified_claim_takes_priority_over_incidental_payment_signal():
+    issue = choose_issue(
+        {"order_status": "delivered"},
+        "logistics_delay",
+        "capture_mismatch",
+        ["late_delivery_logistics"],
+        {"payment_mismatch": {}, "late_delivery_logistics": {}},
+    )
+    assert issue == "late_delivery_logistics"
+
+
 class Gateway:
     def __init__(self):
         self.calls = []
@@ -125,6 +136,35 @@ def test_solve_case_uses_real_refs_and_builds_valid_l3b_output(tmp_path):
     assert {"task_assigned", "handoff", "policy_decided", "verification_completed"} <= {
         event["event_type"] for event in events
     }
+    assert "get_product_context" not in {name for name, _, _ in gateway.calls}
+
+
+def test_non_delivery_claim_does_not_query_shipment_or_product(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    contracts = Contracts(root / "contracts" / "schemas")
+    trace = TraceWriter(tmp_path / "trace.jsonl", contracts)
+    case = {
+        "case_id": "L3B_CASE_002",
+        "customer_unique_id_hint": "customer-1",
+        "candidate_order_ids": ["order-1"],
+        "customer_request": {
+            "claimed_order_id": "order-1",
+            "claims": [{"claim_id": "claim-b", "topic": "unsupported_claim"}],
+        },
+        "investigation_scope": {"include_product_context": True},
+    }
+    gateway = Gateway()
+    asyncio.run(solve_case(case, gateway, trace))
+    names = {name for name, _, _ in gateway.calls}
+    assert "get_shipment_summary" not in names
+    assert "get_product_context" not in names
+    assert {
+        "get_customer_history",
+        "get_order",
+        "get_order_items",
+        "get_payment_timeline",
+        "get_policy",
+    } <= names
 
 
 def test_duplicate_payment_sequence_without_duplicate_event_is_not_duplicate_charge():
