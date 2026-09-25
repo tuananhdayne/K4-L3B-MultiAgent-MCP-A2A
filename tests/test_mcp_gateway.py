@@ -39,7 +39,7 @@ def test_gateway_retries_one_transient_read_timeout():
         async def call_tool(self, name, arguments):
             self.attempts += 1
             if self.attempts == 1:
-                raise httpx2.ReadTimeout("temporary MCP timeout")
+                raise httpx2.ConnectError("temporary MCP connection error")
             return await super().call_tool(name, arguments)
 
     root = Path(__file__).resolve().parents[1]

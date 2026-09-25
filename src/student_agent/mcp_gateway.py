@@ -26,13 +26,13 @@ class EvidenceGateway:
         payload = {"case_id": case_id, **arguments}
         try:
             result = await self._session.call_tool(tool_name, arguments=payload)
-        except httpx2.TimeoutException:
-            # Evidence tools are read-only; retry a single transient network timeout.
+        except httpx2.TransportError:
+            # Evidence tools are read-only; retry one transient network failure.
             await asyncio.sleep(0.25)
             try:
                 result = await self._session.call_tool(tool_name, arguments=payload)
-            except httpx2.TimeoutException as exc:
-                raise RuntimeError(f"MCP tool {tool_name} timed out after one retry") from exc
+            except httpx2.TransportError as exc:
+                raise RuntimeError(f"MCP tool {tool_name} failed after one network retry") from exc
         if result.is_error:
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
