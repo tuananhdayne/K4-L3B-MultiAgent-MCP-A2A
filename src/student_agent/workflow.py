@@ -298,6 +298,25 @@ def choose_issue(
     return "insufficient_evidence"
 
 
+def calibrate_confidence(
+    issue: str,
+    entity_resolved: bool,
+    order_evidence: bool,
+    policy_evidence: bool,
+    conflicts: list[dict[str, Any]],
+) -> float:
+    if not entity_resolved or issue == "insufficient_evidence":
+        return 0.3
+    if not order_evidence or not policy_evidence:
+        return 0.35
+    if any(
+        conflict.get("selected_source") is None or conflict.get("resolution_code") == "unresolved"
+        for conflict in conflicts
+    ):
+        return 0.65
+    return 0.85
+
+
 async def solve_case(
     case: dict[str, Any], gateway: EvidenceGateway, trace: TraceWriter
 ) -> dict[str, Any]:
@@ -445,9 +464,9 @@ async def solve_case(
         conflicts.append(
             {
                 "field": "delivered_customer_at",
-                "sources": ["order", "shipment"],
-                "selected_source": "shipment",
-                "resolution_code": "shipment_timeline_precedence",
+                "sources": ["customer_history", "shipment"],
+                "selected_source": "customer_history",
+                "resolution_code": "case_time_window",
             }
         )
     if history_orders and selected and selected not in history_orders:
@@ -459,11 +478,9 @@ async def solve_case(
                 "resolution_code": "unresolved",
             }
         )
-    confidence = 0.85 if selected and issue != "insufficient_evidence" else 0.3
-    if conflicts:
-        confidence = min(confidence, 0.65)
-    if not policy_ev or not order_ev:
-        confidence = min(confidence, 0.35)
+    confidence = calibrate_confidence(
+        issue, bool(selected), bool(order_ev), bool(policy_ev), conflicts
+    )
     claims = []
     for claim in request.get("claims", [])[:5]:
         topic = claim.get("topic")

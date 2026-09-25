@@ -4,7 +4,12 @@ from pathlib import Path
 
 from student_agent.contracts import Contracts
 from student_agent.trace import TraceWriter
-from student_agent.workflow import payment_analysis, scope_snapshot, solve_case
+from student_agent.workflow import (
+    calibrate_confidence,
+    payment_analysis,
+    scope_snapshot,
+    solve_case,
+)
 
 
 class Gateway:
@@ -232,3 +237,23 @@ def test_snapshot_uses_order_active_when_case_opened():
     assert scoped_items[0]["shipping_limit_date"].startswith("2018-01")
     assert len(scoped_payment["events"]) == 2
     assert {row["payment_type"] for row in scoped_payment["payments"]} == {"credit_card", "voucher"}
+
+
+def test_resolved_snapshot_conflict_does_not_reduce_confidence():
+    conflict = {
+        "field": "delivered_customer_at",
+        "sources": ["order", "shipment"],
+        "selected_source": "customer_history",
+        "resolution_code": "case_time_window",
+    }
+    assert calibrate_confidence("late_delivery_logistics", True, True, True, [conflict]) == 0.85
+
+
+def test_unresolved_conflict_reduces_confidence():
+    conflict = {
+        "field": "customer_order_link",
+        "sources": ["customer", "order"],
+        "selected_source": None,
+        "resolution_code": "unresolved",
+    }
+    assert calibrate_confidence("late_delivery_logistics", True, True, True, [conflict]) == 0.65
