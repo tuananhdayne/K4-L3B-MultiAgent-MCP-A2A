@@ -285,7 +285,7 @@ def choose_issue(
         "logistics_delay": "late_delivery_logistics",
     }
     for value, issue in observed.items():
-        if value in {shipment, payment} and issue in topics and issue in rules:
+        if value in {shipment, payment} and issue in rules:
             return issue
     if (
         payment == "reconciled"
@@ -299,22 +299,40 @@ def choose_issue(
 
 
 def calibrate_confidence(
-    issue: str,
-    entity_resolved: bool,
-    order_evidence: bool,
-    policy_evidence: bool,
+    *,
+    entity_quality: float,
+    evidence_completeness: float,
+    direct_support: float,
+    consistency: float,
+    evidence_richness: float,
     conflicts: list[dict[str, Any]],
 ) -> float:
-    if not entity_resolved or issue == "insufficient_evidence":
-        return 0.3
-    if not order_evidence or not policy_evidence:
-        return 0.35
-    if any(
-        conflict.get("selected_source") is None or conflict.get("resolution_code") == "unresolved"
-        for conflict in conflicts
-    ):
-        return 0.65
-    return 0.85
+    """Score evidence quality, source coverage, detail, and contradictions."""
+    components = (
+        entity_quality,
+        evidence_completeness,
+        direct_support,
+        consistency,
+        evidence_richness,
+    )
+    entity_quality, evidence_completeness, direct_support, consistency, evidence_richness = (
+        min(1.0, max(0.0, float(value))) for value in components
+    )
+    score = (
+        0.04
+        + 0.15 * entity_quality
+        + 0.21 * evidence_completeness
+        + 0.23 * direct_support
+        + 0.10 * consistency
+        + 0.17 * evidence_richness
+    )
+    for conflict in conflicts:
+        unresolved = (
+            conflict.get("selected_source") is None
+            or conflict.get("resolution_code") == "unresolved"
+        )
+        score -= 0.12 if unresolved else 0.025
+    return round(min(0.95, max(0.0, score)), 4)
 
 
 async def solve_case(
@@ -478,8 +496,72 @@ async def solve_case(
                 "resolution_code": "unresolved",
             }
         )
+    required_evidence = {"entity", "order", "items", "policy"}
+    if issue.startswith("late_delivery"):
+        required_evidence.add("shipment")
+    if issue in {
+        "payment_mismatch",
+        "duplicate_charge",
+        "valid_split_payment",
+        "canceled_order_paid",
+        "unavailable_order_paid",
+        "refund_pending",
+        "refund_failed",
+    } or amount > 0:
+        required_evidence.add("payment")
+    if issue.startswith("refund"):
+        required_evidence.add("refund")
+    evidence_available = {
+        "entity": bool(selected),
+        "order": bool(order_ev),
+        "items": bool(items_ev),
+        "shipment": bool(shipment_ev),
+        "payment": bool(payment_ev),
+        "refund": bool(refund_ev),
+        "policy": bool(policy_ev and rule),
+    }
+    evidence_completeness = sum(
+        evidence_available[source] for source in required_evidence
+    ) / len(required_evidence)
+    if selected and selected in history_orders:
+        entity_quality = 0.9
+    elif selected:
+        entity_quality = 0.65
+    else:
+        entity_quality = 0.0
+    issue_signals = {
+        "late_delivery_seller": shipment_verdict == "seller_delay",
+        "late_delivery_logistics": shipment_verdict == "logistics_delay",
+        "payment_mismatch": payment_verdict == "capture_mismatch",
+        "duplicate_charge": payment_verdict == "duplicate_capture",
+        "refund_pending": payment_verdict == "refund_pending",
+        "refund_failed": payment_verdict == "refund_failed",
+        "canceled_order_paid": order.get("order_status") == "canceled"
+        and payment_verdict != "insufficient_evidence",
+        "unavailable_order_paid": order.get("order_status")
+        in {"unavailable", "unavailable_order"}
+        and payment_verdict != "insufficient_evidence",
+        "valid_split_payment": payment_verdict == "reconciled"
+        and len({row.get("payment_type") for row in payment.get("payments", [])}) > 1,
+        "unsupported_claim": bool(rule and (payment_ev or shipment_ev)),
+    }
+    if issue in issue_signals:
+        direct_support = 0.95 if issue_signals[issue] else 0.2
+    else:
+        direct_support = 0.15 if issue == "insufficient_evidence" else 0.35
+    consistency = 1.0
+    if issue.startswith("late_delivery") and not complete:
+        consistency -= 0.2
+    if issue == "valid_split_payment" and payment_verdict != "reconciled":
+        consistency -= 0.3
+    evidence_richness = min(1.0, len(set(refs)) / (len(required_evidence) + 2))
     confidence = calibrate_confidence(
-        issue, bool(selected), bool(order_ev), bool(policy_ev), conflicts
+        entity_quality=entity_quality,
+        evidence_completeness=evidence_completeness,
+        direct_support=direct_support,
+        consistency=consistency,
+        evidence_richness=evidence_richness,
+        conflicts=conflicts,
     )
     claims = []
     for claim in request.get("claims", [])[:5]:

@@ -6,10 +6,22 @@ from student_agent.contracts import Contracts
 from student_agent.trace import TraceWriter
 from student_agent.workflow import (
     calibrate_confidence,
+    choose_issue,
     payment_analysis,
     scope_snapshot,
     solve_case,
 )
+
+
+def test_evidence_can_override_customer_claim_topic():
+    issue = choose_issue(
+        {"order_status": "processing"},
+        "seller_delay",
+        "capture_mismatch",
+        ["canceled_order_paid"],
+        {"payment_mismatch": {}, "late_delivery_seller": {}},
+    )
+    assert issue == "payment_mismatch"
 
 
 class Gateway:
@@ -239,14 +251,53 @@ def test_snapshot_uses_order_active_when_case_opened():
     assert {row["payment_type"] for row in scoped_payment["payments"]} == {"credit_card", "voucher"}
 
 
-def test_resolved_snapshot_conflict_does_not_reduce_confidence():
+def test_confidence_uses_continuous_evidence_quality_and_completeness():
+    complete = calibrate_confidence(
+        entity_quality=0.95,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[],
+    )
+    partial = calibrate_confidence(
+        entity_quality=0.65,
+        evidence_completeness=0.5,
+        direct_support=0.35,
+        consistency=0.7,
+        evidence_richness=0.5,
+        conflicts=[],
+    )
+
+    assert 0.0 <= partial < complete <= 0.95
+    assert complete != 0.85
+
+
+def test_resolved_snapshot_conflict_has_small_penalty():
     conflict = {
         "field": "delivered_customer_at",
         "sources": ["order", "shipment"],
         "selected_source": "customer_history",
         "resolution_code": "case_time_window",
     }
-    assert calibrate_confidence("late_delivery_logistics", True, True, True, [conflict]) == 0.85
+    baseline = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[],
+    )
+    resolved = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[conflict],
+    )
+    assert resolved < baseline
+    assert baseline - resolved < 0.1
 
 
 def test_unresolved_conflict_reduces_confidence():
@@ -256,4 +307,52 @@ def test_unresolved_conflict_reduces_confidence():
         "selected_source": None,
         "resolution_code": "unresolved",
     }
-    assert calibrate_confidence("late_delivery_logistics", True, True, True, [conflict]) == 0.65
+    baseline = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[],
+    )
+    unresolved = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[conflict],
+    )
+    assert unresolved < baseline - 0.1
+
+
+def test_confidence_is_bounded_below_one_with_contradictory_evidence():
+    confidence = calibrate_confidence(
+        entity_quality=1.0,
+        evidence_completeness=1.0,
+        direct_support=1.0,
+        consistency=1.0,
+        evidence_richness=1.0,
+        conflicts=[{"selected_source": None, "resolution_code": "unresolved"}] * 8,
+    )
+    assert 0.0 <= confidence < 1.0
+
+
+def test_evidence_richness_changes_confidence():
+    sparse = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=0.65,
+        conflicts=[],
+    )
+    rich = calibrate_confidence(
+        entity_quality=0.9,
+        evidence_completeness=1.0,
+        direct_support=0.9,
+        consistency=1.0,
+        evidence_richness=0.95,
+        conflicts=[],
+    )
+    assert rich > sparse

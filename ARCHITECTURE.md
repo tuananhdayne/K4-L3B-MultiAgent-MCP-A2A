@@ -55,7 +55,7 @@ Refund timeline is queried only for refund/cancellation/unavailability complaint
 
 The CLI validates every output with `l3b-output-v2.schema.json` and checks its `case_id` before writing. `day09 validate` requires exactly the IDs in `case-set.json` and validates each trace event. The packager creates a manifest from the actual case-set version, enforces size limits, scans outputs/trace for Team API Key patterns, and creates only `manifest.json`, `trace.jsonl`, and `outputs/*.json` in the ZIP.
 
-The workflow keeps refund lines equal to the recommended refund, limits refund to available captured funds, keeps the confidence in `[0,1]`, and records receive/assign/consume/handoff/policy/verify/finalize lifecycle events. These checks establish format and local consistency. MCP server audit and the competition scorer decide provenance and semantic correctness after submission.
+The workflow keeps refund lines equal to the recommended refund, limits refund to available captured funds, and calculates confidence from entity match quality, required-source coverage, direct issue evidence, timeline consistency, and the amount of distinct evidence references. Resolved snapshot differences receive a small penalty; unresolved conflicts receive a larger penalty. Confidence is capped below `1.0` and recorded in `[0,1]`. The workflow also records receive/assign/consume/handoff/policy/verify/finalize lifecycle events. These checks establish format and local consistency. MCP server audit and the competition scorer decide provenance and semantic correctness after submission.
 
 ## 7. Reproducibility and run commands
 
